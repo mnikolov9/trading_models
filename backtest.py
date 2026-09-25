@@ -8,18 +8,22 @@ def periods_per_year(index: pd.DatetimeIndex) -> int:
     return 365 if (index.dayofweek >= 5).mean() > 0.1 else 252
 
 
-def positions_from_probs(probs: pd.Series, close: pd.Series, prob_long: float, allow_short: bool,
-                         target_vol: float, max_lev: float) -> pd.Series:
+def positions_from_probs(probs: pd.Series, close: pd.Series, strategy: dict, max_lev: float = 1.0) -> pd.Series:
+    """Позиция (дял от капитала) за всеки ден според стратегията и вероятността за ръст."""
     ppy = periods_per_year(close.index)
-    ret = close.pct_change()
-    vol = ret.rolling(21).std() * np.sqrt(ppy)
-    size = (target_vol / vol).clip(upper=max_lev)
+    vol = close.pct_change().rolling(21).std() * np.sqrt(ppy)
+    size = (strategy["target_vol"] / vol).clip(upper=max_lev)
 
-    direction = pd.Series(0.0, index=probs.index)
-    direction[probs > prob_long] = 1.0
-    if allow_short:
-        direction[probs < 1 - prob_long] = -1.0
-    direction[probs.isna()] = np.nan
+    mode = strategy["mode"]
+    if mode == "timing":
+        direction = (probs > strategy["prob_long"]).astype(float)
+    elif mode == "filter":
+        direction = (probs >= strategy["prob_exit"]).astype(float)
+    elif mode == "always":
+        direction = pd.Series(1.0, index=probs.index)
+    else:
+        raise ValueError(f"Непознат mode: {mode}")
+    direction[probs.isna()] = np.nan   # само out-of-sample периода
     return (direction * size).fillna(0.0)
 
 
@@ -56,6 +60,18 @@ def metrics(r: pd.Series, ppy: int | None = None) -> dict:
     }
 
 
-def hit_rate(probs: pd.Series, fwd_ret: pd.Series) -> float:
+def hit_rate(probs: pd.Series, fwd_ret: pd.Series) -> tuple[float, float]:
+    """(точност на модела, базова точност ако винаги казваш "нагоре")."""
     m = probs.notna() & fwd_ret.notna()
-    return ((probs[m] > 0.5) == (fwd_ret[m] > 0)).mean()
+    up = fwd_ret[m] > 0
+    return ((probs[m] > 0.5) == up).mean(), up.mean()
+
+
+def portfolio(returns: dict) -> pd.Series:
+    """Равни тегла между активите, които вече се търгуват (преди старта си актив не участва).
+    Дни без търговия за даден актив (напр. уикенд за акции) = 0% за него."""
+    df = pd.DataFrame(returns).sort_index()
+    for c in df:
+        first = df[c].first_valid_index()
+        df.loc[first:, c] = df.loc[first:, c].fillna(0.0)
+    return df.mean(axis=1, skipna=True).dropna()

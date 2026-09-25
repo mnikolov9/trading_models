@@ -42,7 +42,10 @@ def main():
     prices = load(args.synthetic, args.refresh)
     market = prices.get(config.MARKET_TICKER)
 
-    rows, strat_rets, bh_rets, signals = [], {}, {}, []
+    rows, signals = [], []
+    names = list(config.STRATEGIES) + ["Купи и дръж"]
+    rets = {n: {} for n in names}
+    main_name = config.MAIN_STRATEGY
     print(f"Модел: {args.model} ({'LightGBM' if mdl.HAS_LGBM else 'sklearn HistGradientBoosting'})"
           if args.model == "gbm" else "Модел: logistic regression")
 
@@ -53,48 +56,51 @@ def main():
         probs = mdl.walk_forward(X, fwd, config.HORIZON, config.MIN_TRAIN_DAYS,
                                  config.RETRAIN_EVERY, args.model)
         oos = probs.first_valid_index()
-        pos = bt.positions_from_probs(probs, df["close"], config.PROB_LONG, config.ALLOW_SHORT,
-                                      config.TARGET_VOL, config.MAX_LEVERAGE)
+        acc, base = bt.hit_rate(probs, fwd)
         cost = config.COST_BPS.get(t, 10)
-        sr = bt.run(pos, df["close"], cost).loc[oos:]
+
+        for name, strat in config.STRATEGIES.items():
+            pos = bt.positions_from_probs(probs, df["close"], strat, config.MAX_LEVERAGE)
+            sr = bt.run(pos, df["close"], cost).loc[oos:]
+            rets[name][t] = sr
+            extra = {"В пазара": (pos.loc[oos:] > 0).mean()}
+            if strat["mode"] != "always":
+                extra.update({"Точност (посока)": acc, "Базова точност": base})
+            rows.append({"Актив": config.ASSETS[t], "Стратегия": name, **bt.metrics(sr), **extra})
+            if name == main_name:
+                signals.append({"Актив": config.ASSETS[t], "Дата": df.index[-1].date(),
+                                "Вероятност за ръст": probs.iloc[-1], "Позиция (дял от капитала)": pos.iloc[-1]})
+
         bh = df["close"].pct_change().loc[oos:].fillna(0.0)
-        strat_rets[t], bh_rets[t] = sr, bh
+        rets["Купи и дръж"][t] = bh
+        rows.append({"Актив": config.ASSETS[t], "Стратегия": "Купи и дръж", **bt.metrics(bh)})
 
-        m, mb = bt.metrics(sr), bt.metrics(bh)
-        rows.append({"Актив": config.ASSETS[t], "Стратегия": "Модел", **m,
-                     "Точност (посока)": bt.hit_rate(probs, fwd), "В пазара": (pos.loc[oos:] > 0).mean()})
-        rows.append({"Актив": config.ASSETS[t], "Стратегия": "Купи и дръж", **mb})
-        signals.append({"Актив": config.ASSETS[t], "Дата": df.index[-1].date(),
-                        "Вероятност за ръст": probs.iloc[-1], "Позиция (дял от капитала)": pos.iloc[-1]})
-
-    # Портфейл: равни тегла между активите, общ календар
-    def portfolio(d):
-        return pd.DataFrame(d).fillna(0.0).mean(axis=1)
-
-    p_strat, p_bh = portfolio(strat_rets), portfolio(bh_rets)
-    rows.append({"Актив": "ПОРТФЕЙЛ", "Стратегия": "Модел", **bt.metrics(p_strat, 252)})
-    rows.append({"Актив": "ПОРТФЕЙЛ", "Стратегия": "Купи и дръж", **bt.metrics(p_bh, 252)})
+    port = {n: bt.portfolio(rets[n]) for n in names}
+    for n in names:
+        rows.append({"Актив": "ПОРТФЕЙЛ", "Стратегия": n, **bt.metrics(port[n])})
+    p_main = port[main_name]
 
     report = pd.DataFrame(rows)
     report.to_csv(os.path.join(config.REPORT_DIR, "summary.csv"), index=False, encoding="utf-8-sig")
     pd.DataFrame(signals).to_csv(os.path.join(config.REPORT_DIR, "latest_signals.csv"), index=False, encoding="utf-8-sig")
-    monthly = (1 + p_strat).resample("ME").prod() - 1
-    monthly.to_frame("Портфейл (модел)").to_csv(os.path.join(config.REPORT_DIR, "monthly_returns.csv"), encoding="utf-8-sig")
+    monthly = (1 + p_main).resample("ME").prod() - 1
+    monthly.to_frame(f"Портфейл ({main_name})").to_csv(os.path.join(config.REPORT_DIR, "monthly_returns.csv"), encoding="utf-8-sig")
 
     pct = ["Годишна доходност", "Средно на месец", "Волатилност", "Макс. спад", "Печеливши месеци",
-           "Най-лош месец", "Точност (посока)", "В пазара"]
-    show = report.copy()
+           "Най-лош месец", "Точност (посока)", "Базова точност", "В пазара"]
+    show = report.drop(columns=["Най-лош месец"]).copy()
     for col in pct:
-        show[col] = show[col].map(lambda v: "" if pd.isna(v) else f"{v:.1%}")
+        if col in show:
+            show[col] = show[col].map(lambda v: "" if pd.isna(v) else f"{v:.1%}")
     show["Sharpe"] = show["Sharpe"].map(lambda v: f"{v:.2f}")
     show["Години"] = show["Години"].map(lambda v: f"{v:.1f}")
     pd.set_option("display.width", 250, "display.max_columns", 20)
     print("\n" + show.to_string(index=False))
 
-    cagr = bt.metrics(p_strat, 252)["Годишна доходност"]
+    cagr = bt.metrics(p_main)["Годишна доходност"]
     lo, hi = config.TARGET_ANNUAL_RETURN
     verdict = "в целта" if lo <= cagr <= hi else ("над целта (провери за грешки!)" if cagr > hi else "под целта")
-    print(f"\nПортфейл: {cagr:.1%} годишно -> {verdict} ({lo:.0%}-{hi:.0%})")
+    print(f"\nПортфейл ({main_name}): {cagr:.1%} годишно -> {verdict} ({lo:.0%}-{hi:.0%})")
     print("\nПоследни сигнали:\n" + pd.DataFrame(signals).to_string(index=False))
 
     # Данни за уеб таблото (dashboard.py)
@@ -108,21 +114,21 @@ def main():
             return v.isoformat()
         return v
 
-    eq_s, eq_b = (1 + p_strat).cumprod() * 100, (1 + p_bh).cumprod() * 100
-    eq_w = pd.DataFrame({"model": eq_s, "bh": eq_b}).resample("W").last().dropna()
+    eq = pd.DataFrame({n: (1 + port[n]).cumprod() * 100 for n in names}).resample("W").last().dropna()
     results = {
+        "version": "0.2",
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "synthetic": args.synthetic,
         "model": ("LightGBM" if mdl.HAS_LGBM else "HistGradientBoosting") if args.model == "gbm" else "Logistic regression",
         "horizon": config.HORIZON,
-        "prob_long": config.PROB_LONG,
+        "main_strategy": main_name,
+        "strategies": config.STRATEGIES,
         "target": list(config.TARGET_ANNUAL_RETURN),
         "summary": [{k: clean(v) for k, v in r.items()} for r in rows],
         "signals": [{k: clean(v) for k, v in s.items()} for s in signals],
         "monthly": {d.strftime("%Y-%m"): clean(v) for d, v in monthly.items()},
-        "equity": {"dates": [d.strftime("%Y-%m-%d") for d in eq_w.index],
-                   "model": [round(v, 2) for v in eq_w["model"]],
-                   "bh": [round(v, 2) for v in eq_w["bh"]]},
+        "equity": {"dates": [d.strftime("%Y-%m-%d") for d in eq.index],
+                   "series": {n: [round(v, 2) for v in eq[n]] for n in names}},
     }
     with open(os.path.join(config.REPORT_DIR, "results.json"), "w", encoding="utf-8") as fh:
         json.dump(results, fh, ensure_ascii=False, indent=1)
@@ -132,8 +138,8 @@ def main():
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(11, 5))
-        (1 + p_strat).cumprod().mul(100).plot(ax=ax, label="Модел (портфейл)", color="#2563eb", lw=2)
-        (1 + p_bh).cumprod().mul(100).plot(ax=ax, label="Купи и дръж (портфейл)", color="#9ca3af", lw=1.5)
+        for n in names:
+            (1 + port[n]).cumprod().mul(100).plot(ax=ax, label=n, lw=2 if n == main_name else 1.2)
         ax.set_title("Растеж на 100 € (out-of-sample)")
         ax.set_ylabel("€")
         ax.grid(alpha=0.3)
