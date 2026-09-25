@@ -1,0 +1,62 @@
+name: Ежедневна прогноза и табло
+
+on:
+  schedule:
+    - cron: "30 22 * * *"   # всеки ден 22:30 UTC (01:30 българско време), след затварянето в САЩ
+  workflow_dispatch:         # ръчно пускане от таб Actions
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Инсталиране на библиотеки
+        run: pip install -r requirements.txt
+
+      - name: Кеш на пазарните данни
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: market-data-${{ github.run_id }}
+          restore-keys: market-data-
+
+      - name: Тест за изтичане на бъдеща информация
+        run: python test_no_leakage.py
+
+      - name: Модели и backtest
+        run: python run.py --refresh
+
+      - name: Генериране на таблото
+        run: python dashboard.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
