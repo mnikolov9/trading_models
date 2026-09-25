@@ -36,6 +36,7 @@ def main():
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--model", default="gbm", choices=["gbm", "logreg"])
+    ap.add_argument("--no-top50", action="store_true", help="без модула за топ 50 компании")
     args = ap.parse_args()
 
     os.makedirs(config.REPORT_DIR, exist_ok=True)
@@ -130,8 +131,20 @@ def main():
         "equity": {"dates": [d.strftime("%Y-%m-%d") for d in eq.index],
                    "series": {n: [round(v, 2) for v in eq[n]] for n in names}},
     }
+    if not args.no_top50:
+        import top50
+        print("\nТоп 50 компании...")
+        results["top50"] = top50.run(market, args.synthetic, args.refresh, args.model)
+
+    def deep(v):
+        if isinstance(v, dict):
+            return {k: deep(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [deep(x) for x in v]
+        return clean(v)
+
     with open(os.path.join(config.REPORT_DIR, "results.json"), "w", encoding="utf-8") as fh:
-        json.dump(results, fh, ensure_ascii=False, indent=1)
+        json.dump(deep(results), fh, ensure_ascii=False, indent=1)
 
     try:
         import matplotlib

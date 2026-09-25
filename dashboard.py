@@ -38,6 +38,11 @@ tr.bh td{color:var(--text2)}tr.port td{font-weight:650}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--text2);margin-bottom:8px}
 .legend span{white-space:nowrap}.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}
 .hm td{text-align:center;min-width:52px;font-size:13px}.hm td:first-child{text-align:left;font-weight:600}
+.t50tabs{margin-bottom:10px}.t50tabs input{width:100%;max-width:320px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+table.sortable th{cursor:pointer;user-select:none}table.sortable th:hover{color:var(--text)}
+.up{color:var(--good)}.down{color:var(--bad)}.tk{color:var(--muted);font-size:12px;margin-left:6px}
+.rk{display:inline-block;min-width:26px;padding:1px 6px;border-radius:6px;font-size:12px;font-weight:650;text-align:center;border:1px solid var(--border)}
+.rk.top{border-color:var(--s1);color:var(--s1)}
 .note{color:var(--muted);font-size:12px;margin-top:24px}
 @media (max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}.tile .v{font-size:22px}.chartbox{height:260px}}
 </style>
@@ -60,6 +65,18 @@ tr.bh td{color:var(--text2)}tr.port td{font-weight:650}
 <div class="card"><h2>Резултати по активи и стратегии</h2><p class="sub" style="margin:-6px 0 10px">„Базова точност“ = колко често би познал, ако винаги казваш „нагоре“. Моделът има стойност само ако е над нея. „Без модел“ показва същия контрол на риска без прогнози.</p><table id="summary"></table></div>
 <div class="card"><h2>Месечни резултати на портфейла</h2><table class="hm" id="monthly"></table></div>
 
+<div class="card" id="t50card" hidden>
+ <h2>Топ 50 компании в света</h2>
+ <p class="sub" style="margin:-6px 0 12px" id="t50meta"></p>
+ <div class="t50tabs"><input id="t50q" type="search" placeholder="Търси компания или тикер…" aria-label="Търсене"></div>
+ <div style="overflow-x:auto"><table id="t50" class="sortable"></table></div>
+ <h2 style="margin-top:24px">Модел за избор на акции: растеж на 100 €</h2>
+ <div class="legend" id="legend50"></div>
+ <div class="chartbox" id="eq50"></div>
+ <div style="overflow-x:auto;margin-top:12px"><table id="t50sum"></table></div>
+ <p class="sub" style="margin-top:10px">⚠ Survivorship bias: списъкът е днешният топ 50, т.е. компании, за които вече знаем, че са пораснали много. Затова и моделът, и „равни тегла“ изглеждат по-добре от реалното. Важна е само разликата между тях.</p>
+</div>
+
 <p class="note">Резултатите са от backtest с walk-forward валидация: моделът прогнозира всеки период само с минали данни, а комисионните са включени. Миналите резултати не гарантират бъдещи. Образователен проект, не е финансов съвет.</p>
 </main>
 <script>
@@ -76,9 +93,6 @@ if (D.synthetic) document.getElementById("banner").innerHTML =
 
 const port = D.summary.find(r => r["Актив"] === "ПОРТФЕЙЛ" && r["Стратегия"] === MAIN);
 const portBH = D.summary.find(r => r["Актив"] === "ПОРТФЕЙЛ" && r["Стратегия"] === "Купи и дръж");
-const NAMES = Object.keys(D.equity.series);
-const COLOR = {}; let ci = 1;
-NAMES.forEach(n => { COLOR[n] = n === "Купи и дръж" ? "var(--base)" : (n === MAIN ? "var(--s1)" : `var(--s${++ci})`); });
 const cagr = port["Годишна доходност"], [lo, hi] = D.target;
 const status = cagr >= lo && cagr <= hi ? ["в целта", "var(--good)"] :
                cagr > hi ? ["над целта: провери!", "var(--warn)"] : ["под целта", "var(--bad)"];
@@ -125,10 +139,12 @@ document.getElementById("monthly").innerHTML =
   }).join("");
 
 // Линейна графика на чист SVG (без външни библиотеки), логаритмична скала
-document.getElementById("legend").innerHTML = NAMES.map(n =>
-  `<span><i style="background:${COLOR[n]}"></i>${esc(n)}</span>`).join("");
-(function () {
-  const box = document.getElementById("eq"), E = D.equity, n = E.dates.length;
+function drawChart(boxId, legendId, E, MAIN, baseName) {
+  const NAMES = Object.keys(E.series), COLOR = {}; let ci = 1;
+  NAMES.forEach(k => { COLOR[k] = k === baseName ? "var(--base)" : (k === MAIN ? "var(--s1)" : `var(--s${++ci})`); });
+  document.getElementById(legendId).innerHTML = NAMES.map(k =>
+    `<span><i style="background:${COLOR[k]}"></i>${esc(k)}</span>`).join("");
+  const box = document.getElementById(boxId), n = E.dates.length;
   if (!n) return;
   const W = box.clientWidth || 800, H = box.clientHeight || 300, m = {l: 64, r: 12, t: 10, b: 26};
   const all = NAMES.flatMap(k => E.series[k]).filter(v => v > 0);
@@ -137,9 +153,11 @@ document.getElementById("legend").innerHTML = NAMES.map(n =>
   const Y = v => H - m.b - (H - m.t - m.b) * (Math.log(v) - lo) / ((hi - lo) || 1);
   const path = arr => arr.map((v, i) => (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1)).join("");
   let g = "";
-  const cand = [];
-  for (let e = 0; e < 7; e++) [1, 2, 5].forEach(k => cand.push(k * Math.pow(10, e)));
-  let ticks = cand.filter(v => Math.log(v) >= lo && Math.log(v) <= hi);
+  const pick = steps => { const c = [];
+    for (let e = 0; e < 7; e++) steps.forEach(k => c.push(k * Math.pow(10, e)));
+    return c.filter(v => Math.log(v) >= lo && Math.log(v) <= hi); };
+  let ticks = pick([1, 2, 5]);
+  if (ticks.length < 4) ticks = pick([1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8]);
   if (ticks.length > 7) ticks = ticks.filter((_, i) => i % 2 === 0);
   ticks.forEach(v => { const y = Y(v);
     g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y}" y2="${y}" stroke="var(--border)"/>` +
@@ -175,7 +193,43 @@ document.getElementById("legend").innerHTML = NAMES.map(n =>
   const hit = svg.querySelector("#hit");
   hit.addEventListener("mousemove", show); hit.addEventListener("touchmove", show, {passive: true});
   hit.addEventListener("mouseleave", hide); hit.addEventListener("touchend", hide);
-})();
+}
+drawChart("eq", "legend", D.equity, MAIN, "Купи и дръж");
+
+if (D.top50) {
+  const T = D.top50;
+  document.getElementById("t50card").hidden = false;
+  drawChart("eq50", "legend50", T.equity, T.main, "S&P 500");
+  document.getElementById("t50meta").textContent =
+    `${T.n_stocks} акции · данни към ${T.table.map(r => r.date).sort().pop()} · моделът подрежда акциите по шанс да бият средното за следващите ${T.horizon} дни` +
+    (T.hit_rate != null ? ` · точност ${pct(T.hit_rate)} (случайно = 50%)` : "");
+  const chg = v => v == null ? '<span style="color:var(--muted)">–</span>' :
+    `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "▲" : v < 0 ? "▼" : ""} ${pct(Math.abs(v))}</span>`;
+  const COLS = [["name","Компания"],["close","Цена"],["d1","1 ден"],["w1","1 седм."],["m1","1 мес."],["m3","3 мес."],["ytd","От 1 яну"],["y1","1 год."],["rank","Ранг на модела"]];
+  let sortKey = "rank", sortDir = 1;
+  const render = () => {
+    const q = document.getElementById("t50q").value.trim().toLowerCase();
+    const rows = T.table.filter(r => !q || r.name.toLowerCase().includes(q) || r.ticker.toLowerCase().includes(q))
+      .sort((a, b) => { const x = a[sortKey], y = b[sortKey];
+        if (x == null) return 1; if (y == null) return -1;
+        return (typeof x === "string" ? x.localeCompare(y, "bg") : x - y) * sortDir; });
+    document.getElementById("t50").innerHTML = "<tr>" + COLS.map(([k, l]) =>
+      `<th data-k="${k}">${l}${k === sortKey ? (sortDir > 0 ? " ↑" : " ↓") : ""}</th>`).join("") + "</tr>" +
+      rows.map(r => `<tr><td>${esc(r.name)}<span class="tk">${esc(r.ticker)}</span></td>
+        <td>${r.close.toLocaleString("bg-BG", {maximumFractionDigits: 2})}</td>
+        <td>${chg(r.d1)}</td><td>${chg(r.w1)}</td><td>${chg(r.m1)}</td><td>${chg(r.m3)}</td><td>${chg(r.ytd)}</td><td>${chg(r.y1)}</td>
+        <td>${r.rank ? `<span class="rk ${r.rank <= T.top_k ? "top" : ""}" title="вероятност ${pct(r.prob)}">${r.rank}</span>` : "–"}</td></tr>`).join("");
+    document.querySelectorAll("#t50 th").forEach(th => th.onclick = () => {
+      const k = th.dataset.k; if (k === sortKey) sortDir = -sortDir; else { sortKey = k; sortDir = k === "name" || k === "rank" ? 1 : -1; }
+      render(); });
+  };
+  document.getElementById("t50q").addEventListener("input", render);
+  render();
+  const sc = ["Годишна доходност","Средно на месец","Волатилност","Sharpe","Макс. спад","Печеливши месеци"];
+  document.getElementById("t50sum").innerHTML = "<tr><th>Стратегия</th><th></th>" + sc.map(c => `<th>${c}</th>`).join("") + "</tr>" +
+    T.summary.map(r => `<tr class="${r["Стратегия"] === T.main ? "port" : "bh"}"><td>${esc(r["Стратегия"])}</td><td></td>` +
+      sc.map(c => `<td>${c === "Sharpe" ? num(r[c]) : pct(r[c])}</td>`).join("") + "</tr>").join("");
+}
 </script>
 </body>
 </html>
