@@ -70,3 +70,18 @@ def synthetic(ticker: str, n_days: int = 2500, seed: int = 0, drift: float = 0.0
     low = np.minimum(open_, close) * np.exp(-np.abs(rng.normal(0, vol / 3, n_days)))
     volume = rng.lognormal(15, 0.3, n_days)
     return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": volume}, index=idx)
+
+
+def load_macro(use_synthetic: bool = False, refresh: bool = False) -> dict:
+    """Връща {име: серия от цени при затваряне}. Липсващ показател се пропуска."""
+    out = {}
+    for i, (ticker, name) in enumerate(config.MACRO.items()):
+        try:
+            if use_synthetic:
+                df = synthetic(ticker, n_days=3500, seed=900 + i, drift=0.0, vol=0.02)
+            else:
+                df = download(ticker, refresh=refresh)
+            out[name] = df["close"]
+        except Exception as exc:  # noqa: BLE001
+            print(f"Макро {ticker}: няма данни ({exc}) - пропускам")
+    return out

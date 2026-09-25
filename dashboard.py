@@ -54,7 +54,7 @@ table.sortable th{cursor:pointer;user-select:none}table.sortable th:hover{color:
 <div id="banner"></div>
 <div class="grid" id="tiles"></div>
 
-<div class="card"><h2>Сигнали за днес</h2><table id="signals"></table></div>
+<div class="card"><h2>Разпределение за днес</h2><p class="sub" style="margin:-6px 0 10px">Всеки актив получава по ¼ от портфейла. Ако активът е по-рисков (волатилност над 25% годишно), позицията се намалява пропорционално, а разликата стои в кеш. Моделите са експериментални и засега не влизат в разпределението.</p><table id="signals"></table></div>
 
 <div class="card">
  <h2>Растеж на 100 € (портфейл, out-of-sample, логаритмична скала)</h2>
@@ -62,7 +62,7 @@ table.sortable th{cursor:pointer;user-select:none}table.sortable th:hover{color:
  <div class="chartbox" id="eq"></div>
 </div>
 
-<div class="card"><h2>Резултати по активи и стратегии</h2><p class="sub" style="margin:-6px 0 10px">„Базова точност“ = колко често би познал, ако винаги казваш „нагоре“. Моделът има стойност само ако е над нея. „Без модел“ показва същия контрол на риска без прогнози.</p><table id="summary"></table></div>
+<div class="card"><h2>Резултати по активи и стратегии</h2><p class="sub" style="margin:-6px 0 6px">„Тайминг“ и „Филтър“ са експериментални модели. Основната стратегия е „Без модел (риск-контрол)“.</p><p class="sub" style="margin:-6px 0 10px">„Базова точност“ = колко често би познал, ако винаги казваш „нагоре“. Моделът има стойност само ако е над нея. „Без модел“ показва същия контрол на риска без прогнози.</p><table id="summary"></table></div>
 <div class="card"><h2>Месечни резултати на портфейла</h2><table class="hm" id="monthly"></table></div>
 
 <div class="card" id="t50card" hidden>
@@ -87,7 +87,7 @@ const num = (v, d=2) => v == null ? "–" : v.toFixed(d).replace(".", ",");
 const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 
 document.getElementById("meta").textContent =
-  `Обновено: ${D.generated_utc} · стратегия: ${MAIN} · модел: ${D.model} · хоризонт: ${D.horizon} дни · цел: ${D.target[0]*100}–${D.target[1]*100}% годишно`;
+  `v${D.version || ""} · обновено: ${D.generated_utc} · стратегия: ${MAIN} · модел: ${D.model} · хоризонт: ${D.horizon} дни · цел: ${D.target[0]*100}–${D.target[1]*100}% годишно`;
 if (D.synthetic) document.getElementById("banner").innerHTML =
   '<div class="banner">Това са ТЕСТОВИ изкуствени данни. Реалните резултати ще се появят след първото пускане в GitHub Actions.</div>';
 
@@ -105,13 +105,20 @@ const tiles = [
 document.getElementById("tiles").innerHTML = tiles.map(([k, v, n]) =>
   `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`).join("");
 
-document.getElementById("signals").innerHTML =
-  "<tr><th>Актив</th><th>Сигнал</th><th>Вероятност за ръст</th><th>Дял от капитала</th><th>Данни към</th></tr>" +
-  D.signals.map(s => {
-    const buy = s["Позиция (дял от капитала)"] > 0;
-    return `<tr><td>${esc(s["Актив"])}</td><td><span class="pill ${buy ? "buy" : "cash"}">${buy ? "▲ Купи/дръж" : "■ Кеш"}</span></td>
-      <td>${pct(s["Вероятност за ръст"])}</td><td>${pct(s["Позиция (дял от капитала)"], 0)}</td><td>${esc(s["Дата"])}</td></tr>`;
-  }).join("");
+{
+  const tot = D.signals.reduce((a, s) => a + (s["Дял от портфейла"] || 0), 0);
+  const bar = v => `<span style="display:inline-block;width:70px;height:6px;border-radius:3px;background:var(--border);vertical-align:middle;margin-right:8px;overflow:hidden"><span style="display:block;height:100%;width:${Math.round(v*100)}%;background:var(--s1)"></span></span>`;
+  document.getElementById("signals").innerHTML =
+    "<tr><th>Актив</th><th>Дял от портфейла</th><th>Позиция в актива</th><th>Волатилност</th><th>Мнение на модела (експ.)</th><th>Данни към</th></tr>" +
+    D.signals.map(s => {
+      const p = s["Мнение на модела"], ok = s["Моделът бие базата"];
+      const view = p == null ? "–" : `${p >= 0.5 ? "▲" : "▼"} ${pct(p, 0)}` +
+        (ok ? "" : ` <span style="color:var(--muted)" title="Моделът не бие „винаги нагоре“ за този актив, затова не влиза в разпределението">(не се ползва)</span>`);
+      return `<tr><td>${esc(s["Актив"])}</td><td>${bar(s["Дял от портфейла"])}<b>${pct(s["Дял от портфейла"], 0)}</b></td>
+        <td>${pct(s["Позиция в актива"], 0)}</td><td>${pct(s["Волатилност"], 0)}</td><td>${view}</td><td>${esc(s["Дата"])}</td></tr>`;
+    }).join("") +
+    `<tr><td>Кеш</td><td>${bar(Math.max(0, 1 - tot))}<b>${pct(Math.max(0, 1 - tot), 0)}</b></td><td colspan="4" style="text-align:left;color:var(--muted)">неинвестирана част (по-рисковите активи получават по-малък дял)</td></tr>`;
+}
 
 const cols = ["Годишна доходност","Средно на месец","Волатилност","Sharpe","Макс. спад","Печеливши месеци","Точност (посока)","Базова точност","В пазара"];
 document.getElementById("summary").innerHTML =
@@ -202,7 +209,8 @@ if (D.top50) {
   drawChart("eq50", "legend50", T.equity, T.main, "S&P 500");
   document.getElementById("t50meta").textContent =
     `${T.n_stocks} акции · данни към ${T.table.map(r => r.date).sort().pop()} · моделът подрежда акциите по шанс да бият средното за следващите ${T.horizon} дни` +
-    (T.hit_rate != null ? ` · точност ${pct(T.hit_rate)} (случайно = 50%)` : "");
+    (T.hit_rate != null ? ` · точност ${pct(T.hit_rate)} (случайно = 50%)` : "") +
+    (T.missing && T.missing.length ? ` · без данни: ${T.missing.join(", ")}` : "");
   const chg = v => v == null ? '<span style="color:var(--muted)">–</span>' :
     `<span class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v > 0 ? "▲" : v < 0 ? "▼" : ""} ${pct(Math.abs(v))}</span>`;
   const COLS = [["name","Компания"],["close","Цена"],["d1","1 ден"],["w1","1 седм."],["m1","1 мес."],["m3","3 мес."],["ytd","От 1 яну"],["y1","1 год."],["rank","Ранг на модела"]];

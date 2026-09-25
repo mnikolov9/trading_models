@@ -56,3 +56,7 @@ TOP50 = [
     ("ARM", "Arm Holdings", "Великобритания"),
     ("PANW", "Palo Alto Networks", "САЩ"),
 ]
+
+# Резервни тикери, ако основният не се зарежда от Yahoo
+ALT = {"ROG.SW": "RHHBY", "TCEHY": "0700.HK", "601939.SS": "0939.HK",
+       "601288.SS": "1288.HK", "005930.KS": "SMSN.IL"}

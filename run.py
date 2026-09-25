@@ -42,6 +42,8 @@ def main():
     os.makedirs(config.REPORT_DIR, exist_ok=True)
     prices = load(args.synthetic, args.refresh)
     market = prices.get(config.MARKET_TICKER)
+    macro = data.load_macro(args.synthetic, args.refresh)
+    print(f"Макро показатели: {', '.join(macro) or 'няма'}")
 
     rows, signals = [], []
     names = list(config.STRATEGIES) + ["Купи и дръж"]
@@ -52,7 +54,7 @@ def main():
 
     for t, df in prices.items():
         mkt = None if t == config.MARKET_TICKER else market
-        X = features.build_features(df, mkt)
+        X = features.build_features(df, mkt, macro)
         fwd = features.build_target(df, config.HORIZON)
         probs = mdl.walk_forward(X, fwd, config.HORIZON, config.MIN_TRAIN_DAYS,
                                  config.RETRAIN_EVERY, args.model)
@@ -69,8 +71,11 @@ def main():
                 extra.update({"Точност (посока)": acc, "Базова точност": base})
             rows.append({"Актив": config.ASSETS[t], "Стратегия": name, **bt.metrics(sr), **extra})
             if name == main_name:
-                signals.append({"Актив": config.ASSETS[t], "Дата": df.index[-1].date(),
-                                "Вероятност за ръст": probs.iloc[-1], "Позиция (дял от капитала)": pos.iloc[-1]})
+                vol21 = df["close"].pct_change().rolling(21).std().iloc[-1] * np.sqrt(bt.periods_per_year(df.index))
+                signals.append({"Актив": config.ASSETS[t], "Тикер": t, "Дата": df.index[-1].date(),
+                                "Дял от портфейла": pos.iloc[-1] / len(prices),
+                                "Позиция в актива": pos.iloc[-1], "Волатилност": vol21,
+                                "Мнение на модела": probs.iloc[-1], "Моделът бие базата": bool(acc > base)})
 
         bh = df["close"].pct_change().loc[oos:].fillna(0.0)
         rets["Купи и дръж"][t] = bh
@@ -117,7 +122,7 @@ def main():
 
     eq = pd.DataFrame({n: (1 + port[n]).cumprod() * 100 for n in names}).resample("W").last().dropna()
     results = {
-        "version": "0.2",
+        "version": config.VERSION,
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "synthetic": args.synthetic,
         "model": ("LightGBM" if mdl.HAS_LGBM else "HistGradientBoosting") if args.model == "gbm" else "Logistic regression",
@@ -134,7 +139,7 @@ def main():
     if not args.no_top50:
         import top50
         print("\nТоп 50 компании...")
-        results["top50"] = top50.run(market, args.synthetic, args.refresh, args.model)
+        results["top50"] = top50.run(market, args.synthetic, args.refresh, args.model, macro)
 
     def deep(v):
         if isinstance(v, dict):

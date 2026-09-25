@@ -15,7 +15,7 @@ def rsi(close: pd.Series, n: int = 14) -> pd.Series:
     return 100 - 100 / (1 + rs)
 
 
-def build_features(df: pd.DataFrame, market: pd.DataFrame | None = None) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, market: pd.DataFrame | None = None, macro: dict | None = None) -> pd.DataFrame:
     c = df["close"]
     r = np.log(c).diff()
     f = pd.DataFrame(index=df.index)
@@ -66,6 +66,13 @@ def build_features(df: pd.DataFrame, market: pd.DataFrame | None = None) -> pd.D
         f["mkt_vol_21"] = mr.rolling(21).std()
         f["mkt_dist_ma200"] = mc / mc.rolling(200).mean() - 1
         f["corr_mkt_63"] = r.rolling(63).corr(mr)
+
+    # Макро: страх (VIX), лихви (10г. САЩ), долар (DXY)
+    for name, series in (macro or {}).items():
+        m = series.reindex(df.index, method="ffill")
+        f[f"{name}_z"] = (m - m.rolling(252).mean()) / m.rolling(252).std()
+        f[f"{name}_chg_5"] = m / m.shift(5) - 1
+        f[f"{name}_chg_21"] = m / m.shift(21) - 1
 
     return f.replace([np.inf, -np.inf], np.nan)
 

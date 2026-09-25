@@ -17,7 +17,7 @@ import config
 import data
 import features
 import model as mdl
-from universe import TOP50
+from universe import TOP50, ALT
 
 TOP50_HORIZON = 21      # прогноза за ~1 месец напред
 REBALANCE_EVERY = 5     # преразпределение всяка седмица
@@ -26,21 +26,26 @@ RETRAIN_EVERY = 63      # преобучение на ~3 месеца (моде�
 COST_BPS = 5
 
 
-def load(market: pd.DataFrame, synthetic: bool, refresh: bool) -> dict:
-    prices = {}
+def load(market: pd.DataFrame, synthetic: bool, refresh: bool) -> tuple[dict, list]:
+    prices, missing = {}, []
     for i, (t, name, _) in enumerate(TOP50):
-        try:
-            if synthetic:
-                df = data.synthetic(t, n_days=1500 + 20 * (i % 10), seed=500 + i, vol=0.018,
-                                    drift=0.0004, signal=0.05)
-            else:
-                df = data.download(t, refresh=refresh)
-        except Exception as exc:  # noqa: BLE001
-            print(f"{t} ({name}): няма данни ({exc}) - пропускам")
+        df = None
+        for tk in [t] + ([ALT[t]] if t in ALT else []):
+            try:
+                if synthetic:
+                    df = data.synthetic(t, n_days=1500 + 20 * (i % 10), seed=500 + i, vol=0.018,
+                                        drift=0.0004, signal=0.05)
+                else:
+                    df = data.download(tk, refresh=refresh)
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(f"{tk} ({name}): няма данни ({exc})")
+        if df is None or df.empty:
+            missing.append(f"{name} ({t})")
             continue
         # общ календар = търговските дни на американския пазар
         prices[t] = df.reindex(market.index, method="ffill", limit=5).dropna()
-    return prices
+    return prices, missing
 
 
 def movement_table(prices: dict, probs_last: pd.Series) -> list:
@@ -68,14 +73,15 @@ def movement_table(prices: dict, probs_last: pd.Series) -> list:
     return rows
 
 
-def run(market: pd.DataFrame, synthetic: bool = False, refresh: bool = False, model_kind: str = "gbm") -> dict:
-    prices = load(market, synthetic, refresh)
+def run(market: pd.DataFrame, synthetic: bool = False, refresh: bool = False, model_kind: str = "gbm",
+        macro: dict | None = None) -> dict:
+    prices, missing = load(market, synthetic, refresh)
     print(f"Топ 50: заредени {len(prices)} акции")
 
     # Панел (дата, акция) -> признаци + цел
     feats, fwd = {}, {}
     for t, df in prices.items():
-        f = features.build_features(df, market.reindex(df.index))
+        f = features.build_features(df, market.reindex(df.index), macro)
         feats[t] = f
         fwd[t] = features.build_target(df, TOP50_HORIZON)
     X = pd.concat(feats, names=["ticker", "date"]).swaplevel().sort_index()
@@ -151,7 +157,7 @@ def run(market: pd.DataFrame, synthetic: bool = False, refresh: bool = False, mo
     for r in summary:
         print(f"  {r['Стратегия']:<26} {r['Годишна доходност']:7.1%} годишно, спад {r['Макс. спад']:6.1%}, Sharpe {r['Sharpe']:.2f}")
     return {
-        "top_k": TOP_K, "horizon": TOP50_HORIZON, "n_stocks": len(prices), "hit_rate": hit,
+        "top_k": TOP_K, "horizon": TOP50_HORIZON, "n_stocks": len(prices), "missing": missing, "hit_rate": hit,
         "summary": summary, "table": table,
         "equity": {"dates": [d.strftime("%Y-%m-%d") for d in eq.index],
                    "series": {k: [round(float(v), 2) for v in eq[k]] for k in eq}},
